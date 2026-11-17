@@ -1,5 +1,7 @@
 # Time-aware Q&A over a credit union's public website: retrieval and extractive LLM selection
 
+**English** | [中文](README.zh-CN.md)
+
 [![tests](https://github.com/inosven/extractive-rag-credit-union/actions/workflows/tests.yml/badge.svg)](https://github.com/inosven/extractive-rag-credit-union/actions/workflows/tests.yml)
 
 A question-answering system over several dated crawls of a credit union's public website. It answers member
