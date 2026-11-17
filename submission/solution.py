@@ -1,5 +1,6 @@
 """
 Dupaco knowledge system: rules + structured facts + BM25 sentence retrieval. No LLM, no network.
+(An optional LLM passage selector exists in llm.py; it is off unless DUPACO_LLM is set, see NOTES.md.)
 
 See NOTES.md for how "current" is decided.
 """
@@ -8,6 +9,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+import time
 from collections import Counter, defaultdict
 from datetime import date
 from pathlib import Path
@@ -19,7 +21,15 @@ sys.path.insert(0, str(next(d / "harness" for d in _HERE.parents if (d / "harnes
 from contract import Answer, Conflict, Snapshot, Source  # noqa: E402
 
 import kb  # noqa: E402
+import llm as llm_layer  # noqa: E402
+import passages as passage_index  # noqa: E402
 from kb import Fact, KnowledgeBase, SnapshotView, norm_label, tokenize  # noqa: E402
+
+# Rule handlers whose answer the optional LLM layer may replace with a better retrieved passage (see _llm_review).
+# Rates, fee schedules, routing numbers and "product not listed" refusals are never reviewed.
+# Links and branch hours are structured answers (a URL, an hours block) and are not reviewed either.
+SOFT_HANDLERS = ("h_about", "h_product", "h_join", "h_eligibility", "h_contact", "h_address", "h_branch_phone")
+LLM_ANSWER_BUDGET_S = float(os.getenv("DUPACO_LLM_ANSWER_BUDGET", "1.85"))   # total model time allowed per answer() call (scorer: p95 <= 2 s for full marks)
 
 REFUSAL = ("I couldn't find that on Dupaco's website. It isn't listed there, so please contact Dupaco "
            "directly and a team member can help.")
@@ -290,6 +300,44 @@ _ATYPE_Q = [
                           r"\bthe most\b[^?.]{0,40}\b(?:pay|give|award|grant|get)\b|\bworth\b|\bup to how much\b")),
     ("person", re.compile(r"^who\b(?! (?:do|should|can|may|is eligible|qualif|can join))|\bwho (?:is|was|became|serves|served|leads|heads|chairs|runs|took over)\b(?! eligible)")),
 ]
+
+
+_NUM_WORD = r"\b(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|dozen|hundred|thousand|million)\b"
+_VALUE_CHECKS = [
+    # (the question asks for this kind of value, a passage that answers must contain one of these)
+    (re.compile(r"\bhow many\b|\bnumber of\b|\bwhat (?:\w+ ){0,3}score\b"),
+     re.compile(r"\d|\bas many\b|\bunlimited\b|\bno limit\b|" + _NUM_WORD, re.I)),
+    (re.compile(r"\bwhat percent|\bpercentage\b"),
+     re.compile(r"\d\s?(?:%|percent)|" + _NUM_WORD + r"[ -]percent", re.I)),
+    (re.compile(r"\bhow much\b|\bwhat does it cost\b|\bwhat (?:will|would) it cost\b"),
+     re.compile(r"\d|\bfree\b|\bno (?:\w+ ){0,2}(?:cost|charge|fee)|\bat no cost\b|\bwaive|\bnot? \w+ (?:a |any )?(?:fee|charge)|"
+                + _NUM_WORD, re.I)),
+]
+
+
+def value_stated(ql: str, text: str) -> bool:
+    """False when the question asks for a count, a percentage or an amount and the passage has none. Used on the
+    model's pick: a passage about the right topic that does not state the figure is not an answer (the model
+    tends to pick it anyway when the site does not publish the figure)."""
+    for asks, has in _VALUE_CHECKS:
+        if asks.search(ql):
+            return bool(has.search(text))
+    return True
+
+
+_EXISTENCE_Q_RE = re.compile(r"^(?:do|does|did|are|is|were|was) (?:any|there|all|every|each)\b|\b(?:which|what) (?:\w+ ){0,4}"
+                             r"(?:is|are|has|have|pays?|offers?) the (?:highest|lowest|best|most|least|cheapest|longest|shortest)\b")
+_MONEY_RATE_RE = re.compile(r"\$\s?\d[\d,]*(?:\.\d+)?|\d[\d,]*(?:\.\d+)?\s?%")
+
+
+def _money_rate_values(text: str) -> set:
+    """{'$1000', '5.59%'}: the dollar and percent figures of a text, written one way."""
+    out = set()
+    for m in _MONEY_RATE_RE.findall(text or ""):
+        unit = "$" if m.startswith("$") else "%"
+        num = re.sub(r"[^\d.]", "", m)
+        out.add(unit + (num.rstrip("0").rstrip(".") if "." in num else num))
+    return out
 
 
 def answer_types(ql: str) -> list:
@@ -670,12 +718,36 @@ class Dupaco:
         self._conflicts: Optional[list[Conflict]] = None
         self._definitive = False
         self._last_hit = None      # best sentence of the last h_retrieve call
+        self.llm = llm_layer.LLMClient.from_env()     # None unless DUPACO_LLM is set and a key is available
+        self._llm_deadline = 0.0   # wall-clock limit for model calls within one answer() call
+        self._last_path = None     # which path produced the last answer (development statistics only)
+        self._soft_depth = 0
+        # passage-level candidates for the selector (prose windows + table rows); DUPACO_PASSAGES=off for ablation
+        self._use_passages = os.getenv("DUPACO_PASSAGES", "on").strip().lower() != "off"
+        self._pidx: dict[str, passage_index.PassageIndex] = {}
+        self._expansions = passage_index.load_expansions() if (self.llm is not None and self._use_passages) else {}
+        self._embedder = passage_index.Embedder.create() if (self.llm is not None and self._use_passages) else None
+        self._fuse_w = [float(x) for x in os.getenv("DUPACO_FUSE_WEIGHTS", "1,1,0.3").split(",")]   # sentence, passage BM25, embedding
+        self._parts: dict[str, list] = {}     # prose window text -> its sentences
+        # which rule answers the model reviews: "soft" (the SOFT_HANDLERS only) or "all" (every rule answer and refusal)
+        self._review = os.getenv("DUPACO_LLM_REVIEW", "all").strip().lower()
+        if self.llm is not None and self.llm.answer_enabled:
+            for name in SOFT_HANDLERS:
+                setattr(self, name, self._reviewed(getattr(self, name)))
+            for name in dir(type(self)):
+                if name.startswith("h_") and callable(getattr(self, name)):
+                    setattr(self, name, self._named(name, getattr(self, name)))
 
     # ---- contract
     def ingest(self, snapshot: Snapshot) -> None:
         self.kb.ingest(snapshot)
         self._cache.clear()
         self._conflicts = None
+        if self.llm is not None:
+            self.llm.warm_up()         # ingest is not timed; keeps the first answer's model call fast
+            if self._use_passages and self.llm.answer_enabled and self.kb.views:
+                v = self.kb.views[-1]      # built here for every snapshot so that no answer pays for it
+                self._pidx[v.snapshot_id] = passage_index.PassageIndex(v, pick_rows(v.facts), self._list_after, self._embedder, self._expansions)
 
     def answer(self, question: str, as_of: Optional[str] = None) -> Answer:
         key = (question.strip().lower(), as_of)
@@ -683,10 +755,20 @@ class Dupaco:
             return self._cache[key]
         try:
             self._definitive = False
+            self._last_path = "rule"
+            self._last_handler = None
+            self._rule_answer = None
+            self._llm_deadline = time.monotonic() + LLM_ANSWER_BUDGET_S
+            self._final_refusal = None
             ans = self._answer(question, as_of)
+            if self._final_refusal:      # the model found no passage that answers: no later handler overrides that
+                ans, self._last_path = Answer(text=REFUSAL, confident=False), self._final_refusal
+            self._rule_answer = ans
+            if self._last_path == "rule" and self._review == "all" and self.llm is not None and self.llm.answer_enabled:
+                ans = self._llm_review_rule(question, as_of, ans)
             # Nothing found in the chosen snapshot: a page may simply have dropped out of a later crawl.
             # Fall back to earlier snapshots only when the refusal was not a definitive "product not listed".
-            if not ans.confident and not self._definitive and as_of is None and len(self.kb.views) > 1:
+            if not ans.confident and not self._definitive and not self._final_refusal and as_of is None and len(self.kb.views) > 1:
                 for v in reversed(self.kb.views[:-1]):
                     self._definitive = False
                     older = self._answer(question, v.taken_on)
@@ -864,7 +946,7 @@ class Dupaco:
                 have |= {w for w in qwords if FEE_LABEL_ALIAS.get(w, set()) & have}
                 return not qwords or 3 * len(qwords & have) >= 2 * len(qwords)
             return self.h_retrieve(view, info, accept=priced)
-        a = self.h_retrieve(view, info)
+        a = self.h_retrieve(view, info, use_llm=True)
         if not a.confident and not self._definitive:
             b = self.h_prose(view, info)
             if b and self._label_matches(info, b.text):
@@ -2125,16 +2207,21 @@ class Dupaco:
         extra = " ".join(x.rstrip() if x.rstrip().endswith((".", "!", "?")) else x.rstrip() + "." for x in add)
         return re.sub(r"[*_]{2,}", "", text.rstrip() + " " + extra)
 
-    def h_retrieve(self, view: SnapshotView, info: dict, accept=None) -> Answer:
+    def h_retrieve(self, view: SnapshotView, info: dict, accept=None, use_llm: bool = False) -> Answer:
         """Best passage that is about what was asked (core phrase gate) and, for a question that asks for an amount,
-        states one. `accept(sentence, text)` can add a further condition (the fee fallback wants a price)."""
+        states one. `accept(sentence, text)` can add a further condition (the fee fallback wants a price).
+        `use_llm`: the generic fallback call; when the optional LLM layer is on, the model picks among the
+        candidates (see _llm_select), and the rule-based choice below is the fallback."""
         self._last_hit = None
+        if use_llm:
+            self._last_path = "retrieve"
         scored = self.retrieve_scored(view, info)
         if not scored:
             return Answer(text=REFUSAL, confident=False)
         best_score = scored[0][0]
         thresh = 2.0 if len(view.sentences) > 500 else 1.0
-        if best_score < thresh:
+        llm_on = use_llm and self.llm is not None and self.llm.answer_enabled
+        if best_score < thresh and not llm_on:
             return Answer(text=REFUSAL, confident=False)
         ql = info["ql"]
         pairs = core_pairs(info["raw"])
@@ -2187,6 +2274,12 @@ class Dupaco:
             if qty and not self._states_amount(text, focus):
                 text = self._extend_for_amount(view, st, text, focus, strong - QTY_NOUNS)
             ok.append((score, st, text))
+        if llm_on:
+            picked = self._llm_select(view, info, scored, ok)
+            if picked is not None:
+                return picked
+            if best_score < thresh:
+                return Answer(text=REFUSAL, confident=False)
         chosen = None
         if ok:
             score0, st0, text0 = ok[0]
@@ -2222,16 +2315,175 @@ class Dupaco:
                             break
         if chosen is not None:
             score, st, text = chosen
-            text = self._complete_atype(view, st, text, info)
-            self._last_hit = st
-            # the same sentence on other pages (/checking and /personal/checking-accounts): cite those too, product pages first
-            same = self._sentence_pages(view).get(st.text, [])
-            srcs = [st.page.url] + sorted((u for u in same if u != st.page.url),
-                                          key=lambda u: (-view.pages[u].authority, len(u)))
-            return Answer(text=text, sources=[Source(url=u, snapshot_id=view.snapshot_id, quote=st.text[:200]) for u in srcs[:4]])
+            return self._retrieved_answer(view, info, st, text)
         if unpublished:
             self._definitive = True
         return Answer(text=REFUSAL, confident=False)
+
+    def _retrieved_answer(self, view: SnapshotView, info: dict, st, text: str) -> Answer:
+        text = self._complete_atype(view, st, text, info)
+        self._last_hit = st
+        # the same sentence on other pages (/checking and /personal/checking-accounts): cite those too, product pages first
+        same = self._sentence_pages(view).get(st.text, [])
+        srcs = [st.page.url] + sorted((u for u in same if u != st.page.url),
+                                      key=lambda u: (-view.pages[u].authority, len(u)))
+        return Answer(text=text, sources=[Source(url=u, snapshot_id=view.snapshot_id, quote=st.text[:200]) for u in srcs[:4]])
+
+    def _llm_candidates(self, view: SnapshotView, scored: list, ok: list, info: Optional[dict] = None) -> list:
+        """Up to MAX_CANDIDATES (anchor sentence, text) pairs for the model. Two best-first lists are fused:
+        (a) sentence passages: those that passed the rule gates, then the best-scored ones the gates dropped (a gate
+        can be too strict for an unusual wording); (b) the passage index: prose windows and table rows."""
+        sent, seen = [], set()
+        for score, st, text in ok:
+            if text not in seen:
+                seen.add(text)
+                sent.append((st, text))
+        for score, st in scored[:20]:
+            if len(sent) >= llm_layer.MAX_CANDIDATES:
+                break
+            text = self._passage(view, st)
+            if text not in seen:
+                seen.add(text)
+                sent.append((st, text))
+        if info is None or not self._use_passages:
+            return sent[:llm_layer.MAX_CANDIDATES]
+        idx = self._pidx.get(view.snapshot_id)
+        if idx is None:
+            idx = self._pidx[view.snapshot_id] = passage_index.PassageIndex(view, pick_rows(view.facts), self._list_after, self._embedder, self._expansions)
+        wide = []
+        for p in idx.search(info["toks"], expand_query(info["toks"]), topn=llm_layer.MAX_CANDIDATES):
+            if p.text not in seen:
+                wide.append((p.anchor, p.text))
+                self._parts[p.text] = p.parts
+        near = []
+        for p in idx.search_vec(info["raw"], topn=llm_layer.MAX_CANDIDATES):
+            if p.text not in seen:
+                near.append((p.anchor, p.text))
+                self._parts[p.text] = p.parts
+        by_text = {text: (st, text) for st, text in near + wide + sent}
+        merged = passage_index.fuse([[t for _, t in sent], [t for _, t in wide], [t for _, t in near]],
+                                    llm_layer.MAX_CANDIDATES, self._fuse_w)
+        return [by_text[t] for t in merged]
+
+    def _picked(self, view: SnapshotView, choice: str, pairs: list):
+        """(anchor sentence, text) for the model's choice "p3" or "p3:2-4" (sentences 2 to 4 of a prose window)."""
+        cid, _, rng = choice.partition(":")
+        st, text = pairs[int(cid[1:]) - 1]
+        parts = self._parts.get(text) or []
+        if rng and parts:
+            lo, hi = (int(x) for x in rng.split("-"))
+            text = " ".join(parts[lo - 1:hi])
+            st = next((x for x in view.page_sents.get(st.page.url, []) if parts[lo - 1].startswith(x.text)), st)
+        return st, text
+
+    def _named(self, name: str, handler):
+        """Remember which handler produced the last confident answer (LLM mode only; used to decide what to review)."""
+        def run(*args, **kw):
+            ans = handler(*args, **kw)
+            if isinstance(ans, Answer) and ans.confident:
+                self._last_handler = name
+            return ans
+        return run
+
+    def _reviewed(self, handler):
+        """Wrap a soft rule handler: its confident answer is offered to the model next to retrieved passages."""
+        def run(view, info, *args, **kw):
+            self._soft_depth += 1
+            try:
+                ans = handler(view, info, *args, **kw)
+            finally:
+                self._soft_depth -= 1
+            if self._soft_depth == 0 and ans is not None and ans.confident and ans.text:
+                return self._llm_review(view, info, ans)
+            return ans
+        return run
+
+    def _llm_review(self, view: SnapshotView, info: dict, ans: Answer) -> Answer:
+        """The rule answer is passage p1; the model keeps it or picks a retrieved passage that answers better.
+        A timeout or an error keeps the rule answer; "none" (nothing shown answers the question) becomes a refusal."""
+        scored = self.retrieve_scored(view, info)
+        pairs = [(None, ans.text)] + [x for x in self._llm_candidates(view, scored, [], info)
+                                      if x[1] != ans.text][:llm_layer.MAX_CANDIDATES - 1]
+        if len(pairs) < 2:
+            return ans
+        src = view.pages.get(ans.sources[0].url) if ans.sources else None
+        cands = [{"id": "p1", "text": ans.text, "url": ans.sources[0].url if ans.sources else "",
+                  "title": re.sub(r"\s*\|\s*Dupaco.*$", "", src.title).strip() if src else "",
+                  "date": src.content_date if src and src.kind in ("newsroom", "blog") else None}]
+        for i, (st, text) in enumerate(pairs[1:], 2):
+            cands.append(self._cand_dict(f"p{i}", st, text, self._parts.get(text)))
+        remaining = self._llm_deadline - time.monotonic()
+        choice = self.llm.select_passage(info["raw"], view.taken_on, view.snapshot_id, cands, timeout=remaining, review=True)
+        if choice == "none":
+            # neither the rule answer nor any retrieved passage answers the question: the site does not say
+            self._last_path = "review_none"
+            self._final_refusal = "review_none"      # answer() returns the refusal; no later handler gets a second try
+            return Answer(text=REFUSAL, confident=False)
+        if choice in (None, "p1"):
+            self._last_path = "review_keep" if choice else "review_fail"
+            return ans
+        st, text = self._picked(view, choice, pairs)
+        if not value_stated(info["ql"], text):
+            self._last_path = "review_unstated"
+            return ans
+        new_vals = _money_rate_values(text)
+        if new_vals and new_vals <= _money_rate_values(ans.text):
+            # the other passage states the same figures as the rule answer: nothing to gain, and the rule answer
+            # cites the pages the figures come from
+            self._last_path = "review_same"
+            return ans
+        self._last_path = "review_swap"
+        return self._retrieved_answer(view, info, st, text)
+
+    def _llm_review_rule(self, question: str, as_of: Optional[str], ans: Answer) -> Answer:
+        """Review of an answer that came from a rule handler outside SOFT_HANDLERS (rates, fees, branches, links...).
+        A confident answer is offered as passage 1 (see _llm_review). A refusal is replaced only when the model
+        finds a passage that answers; "none" or a failure keeps the refusal."""
+        info = parse_question(question)
+        view = self.kb.view_for(as_of or info.get("as_of_text"))
+        if view is None:
+            return ans
+        if ans.confident and ans.text:
+            if _EXISTENCE_Q_RE.search(info["ql"]):
+                return ans             # "do any tiers pay 0.35%?" is answered over a whole table, not by one passage
+            return self._llm_review(view, info, ans)
+        if self._definitive:
+            return ans                 # "the site does not list that product": a rule decision, not a retrieval miss
+        got = self._llm_select(view, info, self.retrieve_scored(view, info), [])
+        if got is None or not got.confident:
+            self._last_path = "refusal_kept"
+            return ans
+        self._last_path = "refusal_swap"
+        return got
+
+    @staticmethod
+    def _cand_dict(cid: str, st, text: str, parts: Optional[list] = None) -> dict:
+        title = re.sub(r"\s*\|\s*Dupaco.*$", "", st.page.title or "").strip()
+        return {"id": cid, "text": text, "title": title, "url": st.page.url, "parts": parts or [],
+                "section": re.sub(r"[*_#]+", "", st.section or "").strip(),
+                "date": getattr(st, "effective", None) or (st.page.content_date if st.page.kind in ("newsroom", "blog") else None)}
+
+    def _llm_select(self, view: SnapshotView, info: dict, scored: list, ok: list) -> Optional[Answer]:
+        """Let the optional LLM layer pick the passage. Returns None to keep the rule-based choice (layer off,
+        timed out, failed, or out of budget). The answer text is always the site's own passage."""
+        pairs = self._llm_candidates(view, scored, ok, info)
+        if not pairs:
+            return None
+        cands = [self._cand_dict(f"p{i}", st, text, self._parts.get(text)) for i, (st, text) in enumerate(pairs, 1)]
+        remaining = self._llm_deadline - time.monotonic()
+        choice = self.llm.select_passage(info["raw"], view.taken_on, view.snapshot_id, cands, timeout=remaining)
+        if choice is None:
+            self._last_path = "llm_fail"
+            return None
+        if choice == "none":
+            self._last_path = self._final_refusal = "llm_none"
+            return Answer(text=REFUSAL, confident=False)
+        st, text = self._picked(view, choice, pairs)
+        if not value_stated(info["ql"], text):
+            self._last_path = self._final_refusal = "llm_unstated"
+            return Answer(text=REFUSAL, confident=False)
+        self._last_path = "llm_pick"
+        return self._retrieved_answer(view, info, st, text)
 
     @staticmethod
     def _amount_about(text: str, subj: set) -> bool:

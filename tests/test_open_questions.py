@@ -9,6 +9,8 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+HAVE_SITE = any((ROOT / "snapshots").glob("0*/manifest.json"))     # the website snapshots are not in the repository
+needs_site = unittest.skipUnless(HAVE_SITE, "needs the website snapshots (not distributed); see README")
 sys.path.insert(0, str(ROOT / "harness"))
 sys.path.insert(0, str(ROOT / "submission"))
 
@@ -22,6 +24,8 @@ S = None
 
 def setUpModule():
     global S
+    if not HAVE_SITE:
+        return
     S = solution.build()
     for snap in load_snapshots(ROOT / "snapshots"):
         S.ingest(snap)
@@ -122,6 +126,7 @@ class TextHelpers(unittest.TestCase):
 
 # ---------------------------------------------------------------------------------------------- answers
 
+@needs_site
 class AboutAnswers(unittest.TestCase):
     def test_founding_year(self):
         a = S.answer("In what year was Dupaco established?")
@@ -150,6 +155,7 @@ class AboutAnswers(unittest.TestCase):
         self.assertIn("118", S.answer("How many counties are in Dupaco's service area? How many counties does Dupaco serve?").text)
 
 
+@needs_site
 class ProductAnswers(unittest.TestCase):
     def test_named_products(self):
         v = S.kb.views[-1]
@@ -185,6 +191,7 @@ class ProductAnswers(unittest.TestCase):
         self.assertFalse(re.search(r"\d", a.text), a.text)
 
 
+@needs_site
 class RefusalsAndFees(unittest.TestCase):
     def test_unknown_named_product_refuses_without_numbers(self):
         for q in ("What APY does the Dupaco Moonshot Savings account pay?", "What's the fee on Diamond Club Checking?"):
@@ -216,6 +223,7 @@ class RefusalsAndFees(unittest.TestCase):
         self.assertTrue(any(s.url.rstrip("/").endswith("/about/join") for s in a.sources))
 
 
+@needs_site
 class RetrievalPassages(unittest.TestCase):
     def test_help_page_beats_unrelated_pages_and_keeps_list_items(self):
         a = S.answer("Why can't I log in to Shine Online Banking?")

@@ -5,3 +5,5 @@ __pycache__/
 .env
 snapshots/0*/
 snapshots_zip/
+.anthropic_key
+.llm_cache/

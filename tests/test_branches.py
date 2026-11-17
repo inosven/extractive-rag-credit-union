@@ -8,6 +8,8 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+HAVE_SITE = any((ROOT / "snapshots").glob("0*/manifest.json"))     # the website snapshots are not in the repository
+needs_site = unittest.skipUnless(HAVE_SITE, "needs the website snapshots (not distributed); see README")
 sys.path.insert(0, str(ROOT / "harness"))
 sys.path.insert(0, str(ROOT / "submission"))
 
@@ -20,6 +22,8 @@ S = None
 
 def setUpModule():
     global S
+    if not HAVE_SITE:
+        return
     S = solution.build()
     for snap in load_snapshots(ROOT / "snapshots"):
         S.ingest(snap)
@@ -31,6 +35,7 @@ def _refuses_cleanly(test, ans, question):
     test.assertEqual(extra, set(), ans.text)
 
 
+@needs_site
 class BranchTable(unittest.TestCase):
     def test_table_covers_non_dubuque_branches(self):
         rows = S.kb.views[-1].branches
@@ -52,6 +57,7 @@ class BranchTable(unittest.TestCase):
         self.assertEqual(rows["Dyersville"]["lobby"], "")
 
 
+@needs_site
 class BranchAddress(unittest.TestCase):
     def test_dyersville(self):
         a = S.answer("Where is the Dyersville branch?")
@@ -91,6 +97,7 @@ class BranchAddress(unittest.TestCase):
             _refuses_cleanly(self, S.answer(q), q)
 
 
+@needs_site
 class BranchHours(unittest.TestCase):
     def test_named_branch_gets_its_own_hours_only(self):
         q = "What are the lobby hours at the Waukee branch?"

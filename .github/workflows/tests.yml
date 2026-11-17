@@ -1,0 +1,20 @@
+name: tests
+on:
+  push:
+  pull_request:
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      # The rule-based system and its tests use only the standard library. Tests that need the real website
+      # snapshots (not distributed) skip themselves; the sample site in sample/ runs end to end.
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v
+      - name: Score the sample site
+        run: >
+          python harness/run_eval.py --submission submission --snapshots sample/snapshots
+          --eval sample/eval.jsonl --conflicts-gold sample/conflicts_gold.json --out results_sample

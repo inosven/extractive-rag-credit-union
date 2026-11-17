@@ -1,0 +1,4 @@
+# Only for the optional LLM layer (DUPACO_LLM=answer). The default system needs nothing beyond the standard library.
+anthropic>=2.8
+# optional, only for DUPACO_EMBED=on (local embedding retriever; measured: no end-to-end gain, off by default)
+# fastembed>=0.9

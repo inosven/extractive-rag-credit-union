@@ -9,6 +9,8 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+HAVE_SITE = any((ROOT / "snapshots").glob("0*/manifest.json"))     # the website snapshots are not in the repository
+needs_site = unittest.skipUnless(HAVE_SITE, "needs the website snapshots (not distributed); see README")
 sys.path.insert(0, str(ROOT / "harness"))
 sys.path.insert(0, str(ROOT / "submission"))
 
@@ -22,6 +24,8 @@ S = None
 
 def setUpModule():
     global S
+    if not HAVE_SITE:
+        return
     S = solution.build()
     for snap in load_snapshots(ROOT / "snapshots"):
         S.ingest(snap)
@@ -112,6 +116,7 @@ class NumberedList(unittest.TestCase):
 
 # ----------------------------------------------------------------------------- answers
 
+@needs_site
 class Calibration(unittest.TestCase):
     def test_unknown_product_qualifier_refuses(self):
         for q in ("Does Dupaco offer reverse mortgage loans, and what's the APR?",
@@ -141,6 +146,7 @@ class Calibration(unittest.TestCase):
         self.assertIn("5,600", a.text)
 
 
+@needs_site
 class LooserFeeGate(unittest.TestCase):
     def test_wire_paraphrases_agree(self):
         a = S.answer("What's the fee to wire funds domestically?")
@@ -181,6 +187,7 @@ class LooserFeeGate(unittest.TestCase):
         self.assertNotIn("$35", a.text)
 
 
+@needs_site
 class SlotAnswers(unittest.TestCase):
     def test_amount_in_words_picks_tier(self):
         a = S.answer("What APY does High-Yield Savings pay on two hundred fifty thousand dollars?")
@@ -198,6 +205,7 @@ class SlotAnswers(unittest.TestCase):
         self.assertIn("5.79%", a.text)
 
 
+@needs_site
 class Passages(unittest.TestCase):
     def test_step_answer_for_mobile_deposit(self):
         a = S.answer("How can I deposit a check using my smartphone?")
@@ -209,6 +217,7 @@ class Passages(unittest.TestCase):
             self.assertIn(d, a.text)
 
 
+@needs_site
 class BranchesAndAbout(unittest.TestCase):
     def test_compass_side_picks_branch(self):
         a = S.answer("Which branch is on the east side of Madison, and what's its address?")

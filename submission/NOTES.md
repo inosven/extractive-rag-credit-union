@@ -94,6 +94,49 @@ value changed between snapshots, (c) expired promotions that still quote a diffe
 (d) prose contradictions such as the branch count. Identical value sets (personal/business/IRA copies
 of the same certificate) are merged into one entry. Each entry names the value we believe and why.
 
+## Optional LLM layer (off by default)
+
+`submission/llm.py` and `submission/passages.py` add one narrow use of Claude Haiku 5.5: it *chooses* among
+passages; it never writes answer text. The answer is always the website's own sentences, so every number still
+comes from the site.
+
+1. **Candidates.** Up to 12 passages: the sentence retriever's results fused (reciprocal rank fusion) with a
+   passage index of 120-word windows and one line of text per table row. A table row carries only the winning
+   value (newest effective date, then page authority), so an out-of-date rate is never a candidate.
+2. **Selection.** The model returns a passage id and a sentence range, or "none". The reply is three short
+   lines (`asks:` / `check:` / `pick: p3 2 4`); only the last is read, and it is checked in code.
+3. **Review of rule answers.** A confident rule answer is offered as passage 1 next to the retrieved passages
+   and is replaced only if the model picks another passage that states a figure the rule answer lacks.
+   Questions over a whole table ("do any tiers pay 0.35%?") are not reviewed.
+4. **Refusals.** "none" is a refusal. So is a pick without a figure when the question asks for an amount, a
+   count or a percentage.
+
+Switched on with `DUPACO_LLM=answer` plus an Anthropic API key (`requirements-llm.txt`); without either, the
+system is byte-for-byte the deterministic one (`tests/test_llm_off.py`). Each call has a 1.8 s timeout and each
+answer a 1.85 s budget, with no retries; a timeout, API error or malformed reply keeps the rule-based answer.
+Selections are cached, so the same question always gets the same answer (current Claude models accept no
+temperature setting). Measured: p50 1.0 s and p95 1.2 s per call; answer p95 1.2 s.
+
+Two optional retrieval switches, both measured:
+
+- `DUPACO_EXPAND=on`: document expansion. `tools/expand_passages.py` has Claude Haiku write, once and offline
+  (Batch API, about $0.36 for 9,129 passages), three questions each passage answers; their words are added to
+  the passage in the BM25 index. Nothing runs at answer time. Candidate recall@12 on the dev set 0.78 -> 0.85.
+- `DUPACO_EMBED=on`: a local embedding model (bge-small, `fastembed`) as a third retriever in the rank fusion,
+  weight 0.3. Recall@12 0.78 -> 0.82, but no gain in the final score, so it stays off.
+
+Results (harness scorer, same questions, rule-only -> with the layer -> with document expansion too):
+
+| question set | items | final score |
+|---|---|---|
+| held-out set written by Claude Opus 5.5 from the snapshots, checked by `scoring.contains` and a Claude Sonnet 5.5 audit, sealed during tuning | 326 | 0.382 -> 0.664 -> 0.693 |
+| blind set written before this work (never used for tuning) | 68 | 0.642 -> 0.772 -> 0.778 |
+| public practice set | 40 | 0.9457 -> 0.9457 -> 0.9457 |
+
+The generated question sets are not in this repository because they quote the website. The expansion questions
+and the generated test set are both written by a model from the same pages, which may favour the expansion on
+that set; the blind set, which was not written that way, moves much less.
+
 ## Running
 
     python harness/run_eval.py --submission submission --eval eval/public_eval.jsonl

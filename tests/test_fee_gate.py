@@ -8,6 +8,8 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+HAVE_SITE = any((ROOT / "snapshots").glob("0*/manifest.json"))     # the website snapshots are not in the repository
+needs_site = unittest.skipUnless(HAVE_SITE, "needs the website snapshots (not distributed); see README")
 sys.path.insert(0, str(ROOT / "harness"))
 sys.path.insert(0, str(ROOT / "submission"))
 
@@ -20,6 +22,8 @@ S = None
 
 def setUpModule():
     global S
+    if not HAVE_SITE:
+        return
     S = solution.build()
     for snap in load_snapshots(ROOT / "snapshots"):
         S.ingest(snap)
@@ -43,6 +47,7 @@ class FeeGateUnit(unittest.TestCase):
         self.assertFalse(solution.fee_label_cover(q, "Money orders"))
 
 
+@needs_site
 class FeeAnswers(unittest.TestCase):
     def ask(self, q):
         return S.answer(q)

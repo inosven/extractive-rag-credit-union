@@ -2,7 +2,7 @@
 
 `open_eval.jsonl`: 58 hand-labeled questions that exercise the free-text fallback paths
 (`h_retrieve`, `h_prose`): fee schedule lookups, general facts, how-to, product descriptions,
-plus 7 `should_refuse` items and 8 `branch_info` items (dev-051 to dev-058, branch addresses, per-branch hours, branch phone). Same schema as `eval/public_eval.jsonl`. 13 paraphrase groups
+plus 7 `should_refuse` items and 8 `branch_info` items (dev-051 to dev-058, branch addresses, per-branch hours, branch phone). Same schema as `sample/eval.jsonl`. 13 paraphrase groups
 (`group` starting with `g-`). Values were checked against `snapshots/05_2026-09-28_latest`.
 This is a development set, not the official one. Do not tune the system to these exact strings.
 

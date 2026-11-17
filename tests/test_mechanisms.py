@@ -14,6 +14,8 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+HAVE_SITE = any((ROOT / "snapshots").glob("0*/manifest.json"))     # the website snapshots are not in the repository
+needs_site = unittest.skipUnless(HAVE_SITE, "needs the website snapshots (not distributed); see README")
 sys.path.insert(0, str(ROOT / "harness"))
 sys.path.insert(0, str(ROOT / "submission"))
 
@@ -28,6 +30,8 @@ D = solution.Dupaco
 
 def setUpModule():
     global S
+    if not HAVE_SITE:
+        return
     S = solution.build()
     for snap in load_snapshots(ROOT / "snapshots"):
         S.ingest(snap)
@@ -48,6 +52,7 @@ def _has(text, value):
 
 # ----------------------------------------------------------------------------- 1. recency
 
+@needs_site
 class Recency(unittest.TestCase):
     def test_figure_kinds(self):
         self.assertIn("big$", D._fig_kinds("helped prevent nearly $7 million in potential fraud losses"))
@@ -71,6 +76,7 @@ class Recency(unittest.TestCase):
 
 # ----------------------------------------------------------------------------- 2. route triggers
 
+@needs_site
 class RouteTriggers(unittest.TestCase):
     def test_hours_needs_opening_context(self):
         for q in ("What time does the Waukee lobby close on Saturday?", "what are your hours on saturday",
@@ -103,6 +109,7 @@ class RouteTriggers(unittest.TestCase):
 
 # ----------------------------------------------------------------------------- 3. answer types
 
+@needs_site
 class AnswerTypes(unittest.TestCase):
     def test_detection(self):
         self.assertEqual(solution.answer_types("who should i call about a homeowners insurance quote?"), ["phone"])
@@ -141,6 +148,7 @@ class AnswerTypes(unittest.TestCase):
 
 # ----------------------------------------------------------------------------- 4. calibrated refusals
 
+@needs_site
 class Calibration(unittest.TestCase):
     def test_unwrap_pdf_lines(self):
         t = kb.unwrap_lines("Go to My Settings,\nthen Card Security.\nSelect Submit\na Travel Notice.\n\n# 2\nRush fee $25.00\nOther fee $5.00"
@@ -175,6 +183,7 @@ class Calibration(unittest.TestCase):
 
 # ----------------------------------------------------------------------------- 5. tier / variant slips
 
+@needs_site
 class Variants(unittest.TestCase):
     def test_negated_qualifiers(self):
         i = solution.parse_question("What's the 17-month certificate rate, not the jumbo one?")

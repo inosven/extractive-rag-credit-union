@@ -1,0 +1,78 @@
+{
+ "snapshot_id": "01_2026-01-12_baseline",
+ "taken_on": "2026-01-12",
+ "pages": [
+  {
+   "file": "pages/rates.md",
+   "url": "https://www.mapleridgecu.example/rates",
+   "title": "Rates | Maple Ridge CU",
+   "fetched_at": "2026-01-12T03:00:00.000Z"
+  },
+  {
+   "file": "pages/loan-rates.md",
+   "url": "https://www.mapleridgecu.example/rates/loans",
+   "title": "Loan Rates | Maple Ridge CU",
+   "fetched_at": "2026-01-12T03:00:00.000Z"
+  },
+  {
+   "file": "pages/fees.md",
+   "url": "https://www.mapleridgecu.example/fee-schedule",
+   "title": "Fee Schedule | Maple Ridge CU",
+   "fetched_at": "2026-01-12T03:00:00.000Z"
+  },
+  {
+   "file": "pages/checking.md",
+   "url": "https://www.mapleridgecu.example/checking/everyday-checking",
+   "title": "Everyday Checking | Maple Ridge CU",
+   "fetched_at": "2026-01-12T03:00:00.000Z"
+  },
+  {
+   "file": "pages/hsa.md",
+   "url": "https://www.mapleridgecu.example/savings/health-savings-account",
+   "title": "Health Savings Account | Maple Ridge CU",
+   "fetched_at": "2026-01-12T03:00:00.000Z"
+  },
+  {
+   "file": "pages/lost-card.md",
+   "url": "https://www.mapleridgecu.example/help/lost-or-stolen-card",
+   "title": "Lost or Stolen Card | Maple Ridge CU",
+   "fetched_at": "2026-01-12T03:00:00.000Z"
+  },
+  {
+   "file": "pages/mobile-deposit.md",
+   "url": "https://www.mapleridgecu.example/help/mobile-check-deposit",
+   "title": "Mobile Check Deposit | Maple Ridge CU",
+   "fetched_at": "2026-01-12T03:00:00.000Z"
+  },
+  {
+   "file": "pages/branches.md",
+   "url": "https://www.mapleridgecu.example/branches",
+   "title": "Branches and Hours | Maple Ridge CU",
+   "fetched_at": "2026-01-12T03:00:00.000Z"
+  },
+  {
+   "file": "pages/contact.md",
+   "url": "https://www.mapleridgecu.example/contact",
+   "title": "Contact Us | Maple Ridge CU",
+   "fetched_at": "2026-01-12T03:00:00.000Z"
+  },
+  {
+   "file": "pages/about.md",
+   "url": "https://www.mapleridgecu.example/about",
+   "title": "About Us | Maple Ridge CU",
+   "fetched_at": "2026-01-12T03:00:00.000Z"
+  },
+  {
+   "file": "pages/news-2025-special.md",
+   "url": "https://www.mapleridgecu.example/newsroom/2025-9-month-certificate-special",
+   "title": "Maple Ridge announces 9 month certificate special | Maple Ridge CU",
+   "fetched_at": "2026-01-12T03:00:00.000Z"
+  },
+  {
+   "file": "pages/blog-save-more.md",
+   "url": "https://www.mapleridgecu.example/learn/blog/five-small-ways-to-save-more",
+   "title": "Five small ways to save more | Maple Ridge CU",
+   "fetched_at": "2026-01-12T03:00:00.000Z"
+  }
+ ]
+}
