@@ -182,3 +182,8 @@ DUPACO_LLM=answer DUPACO_EXPAND=on DUPACO_LLM_CACHE_DIR=.llm_cache ANTHROPIC_API
 | `tools/milestone.py` | scores several sets in one mode; ablation switches |
 | `tools/expand_passages.py` | document expansion (one Batch API job) |
 | `tools/evalgen/` | question generation, verification, split |
+
+## License
+
+MIT for the code and documents written for this project; see `LICENSE`. It does not cover `harness/` (the task's
+scorer, included unchanged) or the website content quoted in the question sets under `dev/`.
