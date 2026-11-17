@@ -1,5 +1,7 @@
 # Time-aware Q&A over a credit union's public website: retrieval and extractive LLM selection
 
+[![tests](https://github.com/inosven/extractive-rag-credit-union/actions/workflows/tests.yml/badge.svg)](https://github.com/inosven/extractive-rag-credit-union/actions/workflows/tests.yml)
+
 A question-answering system over several dated crawls of a credit union's public website. It answers member
 questions ("What is the 36-month certificate rate?", "How do I report a lost card?") with the **current** value,
 the **right** tier and a **source**, and says "I don't know" when the site does not say.
